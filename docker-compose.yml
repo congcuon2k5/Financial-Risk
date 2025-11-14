@@ -88,9 +88,12 @@ services:
       --webui-port 8080
     environment:
       - SPARK_MASTER_HOST=7077
+      - SPARK_DRIVER_MEMORY=4G
+      - SPARK_WORKER_MEMORY=4G
     ports:
       - "7077:7077" # cho worker
       - "8080:8080" # cho webui
+      - "8888:8888" # cho livy
     volumes:
       - ./spark/app:/opt/app
       - ./model:/opt/model
@@ -109,7 +112,7 @@ services:
       --webui-port 8081
     environment:
       - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=2g
+      - SPARK_WORKER_MEMORY=4G
     ports:
       - "8081:8081"
     depends_on:
