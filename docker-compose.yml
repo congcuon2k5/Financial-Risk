@@ -1,0 +1,154 @@
+
+
+services:
+  # Kafka 
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.11
+    container_name: zookeeper
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    ports:
+      - "2181:2181"
+    networks:
+      - bdnet
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.11
+    container_name: kafka
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      # Định nghĩa 2 listener: trong mạng Docker và cho host
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+    ports:
+      - "9092:9092"     # client trong Docker: kafka:9092
+      - "29092:29092"   # client trên host Windows: localhost:29092
+    depends_on:
+      - zookeeper
+    networks:
+      - bdnet
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+    ports:
+      - "8083:8080"
+    depends_on:
+      - kafka
+    networks:
+      - bdnet
+
+  # HDFS
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    environment:
+      - CLUSTER_NAME=finrisk
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+    networks:
+      - bdnet
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      - "9864:9864"
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    depends_on:
+      - namenode
+    networks:
+      - bdnet
+
+  #spark
+  spark-master:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-master
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.master.Master
+      --host spark-master
+      --port 7077
+      --webui-port 8080
+    environment:
+      - SPARK_MASTER_HOST=7077
+    ports:
+      - "7077:7077" # cho worker
+      - "8080:8080" # cho webui
+    volumes:
+      - ./spark/app:/opt/app
+      - ./model:/opt/model
+    networks:
+      - bdnet
+
+  spark-worker:
+    build: 
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-worker
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+      --webui-port 8081
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+    ports:
+      - "8081:8081"
+    depends_on:
+      - spark-master
+    volumes:
+      - ./model:/opt/model
+    networks:
+      - bdnet
+
+  # batch viewd
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=finuser
+      - POSTGRES_PASSWORD=finpass
+      - POSTGRES_DB=finrisk
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - bdnet
+
+  adminer:
+    image: adminer
+    depends_on:
+      - postgres
+    ports:
+      - "8082:8080"
+    networks:
+      - bdnet
+      
+  # stream view
+
+networks:
+  bdnet:
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  pg_data:
