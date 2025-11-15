@@ -1,189 +1,307 @@
-import os, joblib
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os, re
 from pyspark.sql import SparkSession
-import pandas as pd
+from pyspark.sql import functions as F
+from pyspark.sql.types import DoubleType, NumericType, StringType
 
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import roc_auc_score
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import (
+    StringIndexer,
+    OneHotEncoder,
+    VectorAssembler,
+    Imputer,
+    VectorIndexer,
+)
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
+from pyspark.ml.classification import (
+    LogisticRegression,
+    RandomForestClassifier,
+)
+
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+
+# XGBoost4J-PySpark API (snake_case params)
+from xgboost.spark import SparkXGBClassifier
 
 
-# ============================== PATH HDFS ===============================
-train_path = "hdfs://namenode:9000/data/train.csv"
-test_path  = "hdfs://namenode:9000/data/test.csv"
+# ============================== PATHS & CONST ===============================
+HDFS_DEFAULT = "hdfs://namenode:9000"
+TRAIN_PATH = f"{HDFS_DEFAULT}/data/train.csv"
+TEST_PATH  = f"{HDFS_DEFAULT}/data/test.csv"
 
-id_col = "SK_ID_CURR"
-label_col = "TARGET"
+ID_COL    = "SK_ID_CURR"
+LABEL_COL = "TARGET"
 
-model_dir = "/opt/model"
-os.makedirs(model_dir, exist_ok=True)
+MODEL_DIR = "/opt/model"
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-# ============================== POSTGRES ===============================
+# ============================== JDBC POSTGRES ===============================
 JDBC_URL = "jdbc:postgresql://postgres:5432/finrisk"
 JDBC_PROPS = {
     "driver": "org.postgresql.Driver",
     "user": "finuser",
-    "password": "finpass"
+    "password": "finpass",
 }
 
-# ============================ SPARK SESSION =============================
-spark = (
+# JARs (nếu tồn tại thì add tự động)
+XGB_JAR_1 = "/opt/spark/jars/xgboost4j_2.12-1.7.6.jar"
+XGB_JAR_2 = "/opt/spark/jars/xgboost4j-spark_2.12-1.7.6.jar"
+PG_JDBC   = "/opt/spark/jars/postgresql-42.7.1.jar"
+extra_jars = [p for p in (XGB_JAR_1, XGB_JAR_2, PG_JDBC) if os.path.exists(p)]
+spark_jars = ",".join(extra_jars) if extra_jars else None
+
+# ============================== BUILD SPARK SESSION =========================
+builder = (
     SparkSession.builder
-    .appName("train_models_no_gridsearch")
-    .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
-    .getOrCreate()
+    .appName("train_logistic_rf_xgboost_sparkml")
+    .config("spark.hadoop.fs.defaultFS", HDFS_DEFAULT)
+    .config("spark.sql.shuffle.partitions", "64")        # giảm shuffle default (200)
+    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
 )
+if spark_jars:
+    builder = builder.config("spark.jars", spark_jars)
 
-print("\n>>> Reading data from HDFS...", flush=True)
-train_sp = spark.read.csv(train_path, header=True, inferSchema=True)
-test_sp  = spark.read.csv(test_path, header=True, inferSchema=True)
+spark = builder.getOrCreate()
 
-train = train_sp.toPandas()
-test  = test_sp.toPandas()
-print(">>> Loaded train:", train.shape, "test:", test.shape, flush=True)
+print("\n>>> Spark version:", spark.version)
+print(">>> Extra JARs present:", spark_jars if spark_jars else "(none)")
 
+# ============================== READ DATA ===================================
+print("\n>>> Reading CSV from HDFS ...")
+train = spark.read.option("header", True).option("inferSchema", True).csv(TRAIN_PATH)
+test  = spark.read.option("header", True).option("inferSchema", True).csv(TEST_PATH)
 
-# ============================ PREPROCESS ================================
-y = train[label_col]
-X_train = train.drop(columns=[label_col])
-X_test  = test.copy()
+print(f">>> Train rows: {train.count()} | Test rows: {test.count()}")
 
-train_id = X_train[id_col].values
-test_id  = X_test[id_col].values
+# Bỏ hàng không có label (nếu có)
+train = train.filter(F.col(LABEL_COL).isNotNull())
+# Label → double
+train = train.withColumn(LABEL_COL, F.col(LABEL_COL).cast(DoubleType()))
 
-X_train = X_train.drop(columns=[id_col])
-X_test  = X_test.drop(columns=[id_col])
+# ============================== SANITIZE COL NAMES ==========================
+# (tránh khoảng trắng/ký tự lạ gây lỗi trong pipeline)
+def sanitize_cols(df, keep=set([ID_COL, LABEL_COL])):
+    cols = df.columns
+    mapping = {}
+    used = set(cols)
+    for c in cols:
+        if c in keep:
+            mapping[c] = c
+            continue
+        s = re.sub(r'[^0-9A-Za-z_]', '_', c)
+        s = re.sub(r'_+', '_', s).strip('_')
+        if not s:
+            s = "col"
+        orig_s = s
+        i = 1
+        while s in mapping.values() or s in keep:
+            s = f"{orig_s}_{i}"
+            i += 1
+        mapping[c] = s
+    df2 = df
+    for old, new in mapping.items():
+        if old != new:
+            df2 = df2.withColumnRenamed(old, new)
+    return df2, mapping
 
-cat_list = X_train.select_dtypes(include=["object"]).columns.tolist()
-num_list = [c for c in X_train.columns if c not in cat_list]
+train, mapping = sanitize_cols(train)
+# áp dụng mapping giống hệt cho test
+for old, new in mapping.items():
+    if old != new and old in test.columns:
+        test = test.withColumnRenamed(old, new)
 
-numeric_tf = Pipeline([
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler", StandardScaler())
-])
+# ============================== DETECT SCHEMA ===============================
+all_cols = [c for c in train.columns if c not in [ID_COL, LABEL_COL]]
 
-categorical_tf = Pipeline([
-    ("imputer", SimpleImputer(strategy="most_frequent")),
-    ("ohe", OneHotEncoder(handle_unknown="ignore"))
-])
+num_cols, cat_cols = [], []
+for f in train.schema.fields:
+    c = f.name
+    if c not in all_cols:
+        continue
+    if isinstance(f.dataType, NumericType):
+        num_cols.append(c)
+    elif isinstance(f.dataType, StringType):
+        cat_cols.append(c)
 
-preprocess = ColumnTransformer(
-    transformers=[
-        ("num", numeric_tf, num_list),
-        ("cat", categorical_tf, cat_list),
-    ],
-    remainder="drop"
-)
+print("\n>>> Columns detected:")
+print("  Categorical:", cat_cols)
+print("  Numerical  :", num_cols)
 
+# Bỏ các cột all-null (nếu có)
+if num_cols or cat_cols:
+    nn_counts = train.select(*[F.count(F.col(c)).alias(c) for c in (num_cols + cat_cols)]).collect()[0].asDict()
+    num_cols = [c for c in num_cols if nn_counts.get(c, 0) > 0]
+    cat_cols = [c for c in cat_cols if nn_counts.get(c, 0) > 0]
 
-# ============================ TRAIN/VALIDATION ==========================
-print("\n>>> Splitting train/validation...", flush=True)
-X_tr, X_val, y_tr, y_val = train_test_split(
-    X_train, y, test_size=0.2, stratify=y, random_state=1
-)
+print("\n>>> After dropping all-null columns:")
+print("  Categorical:", cat_cols)
+print("  Numerical  :", num_cols)
 
+# ============================== CAST & CLEAN NUMERIC ========================
+print("\n>>> Casting numeric to Double & cleaning NaN/Inf ...")
+for c in num_cols:
+    train = train.withColumn(c, F.col(c).cast(DoubleType()))
+    test  = test.withColumn(c,  F.col(c).cast(DoubleType()))
 
-# ============================ DEFINE MODELS =============================
-models = {
-    "logistic": LogisticRegression(
-        random_state=1,
-        max_iter=3000,
-        class_weight="balanced",
-        n_jobs=1
-    ),
-
-    "random_forest": RandomForestClassifier(
-        random_state=1,
-        class_weight="balanced",
-        n_jobs=1,
-        n_estimators=200,
-        max_depth=12
-    ),
-
-    "xgboost": XGBClassifier(
-        random_state=1,
-        objective="binary:logistic",
-        eval_metric="logloss",
-        nthread=1,
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.05
+    # NaN / +/-Inf -> null (để Imputer xử lý)
+    train = train.withColumn(
+        c,
+        F.when(F.isnan(F.col(c)) | F.col(c).isNull() |
+               (F.col(c) == float("inf")) | (F.col(c) == float("-inf")), None)
+         .otherwise(F.col(c))
     )
+    test = test.withColumn(
+        c,
+        F.when(F.isnan(F.col(c)) | F.col(c).isNull() |
+               (F.col(c) == float("inf")) | (F.col(c) == float("-inf")), None)
+         .otherwise(F.col(c))
+    )
+
+# ============================== PREPROCESS: SHARED PARTS =====================
+# Impute numeric (tạo *_imp để không overwrite cột gốc)
+imp_num_cols = [f"{c}_imp" for c in num_cols] if num_cols else []
+
+imputer = None
+if num_cols:
+    imputer = Imputer(inputCols=num_cols, outputCols=imp_num_cols, strategy="median")
+
+# ============================== FEATURIZER 1: Logistic (OHE) ================
+stages_ohe = []
+if cat_cols:
+    indexers_ohe = [StringIndexer(inputCol=c, outputCol=f"{c}_idx", handleInvalid="keep") for c in cat_cols]
+    encoders_ohe = [OneHotEncoder(inputCol=f"{c}_idx", outputCol=f"{c}_ohe", handleInvalid="keep", dropLast=True)
+                    for c in cat_cols]
+    stages_ohe += indexers_ohe + encoders_ohe
+
+if imputer:
+    stages_ohe.append(imputer)
+
+assembler_ohe = VectorAssembler(
+    inputCols=([f"{c}_ohe" for c in cat_cols] if cat_cols else []) + (imp_num_cols if imp_num_cols else []),
+    outputCol="features",
+    handleInvalid="keep",
+)
+stages_ohe.append(assembler_ohe)
+
+logistic = LogisticRegression(featuresCol="features", labelCol=LABEL_COL, maxIter=100)
+
+pipeline_logistic = Pipeline(stages=stages_ohe + [logistic])
+
+# ============================== FEATURIZER 2: Trees (NO OHE) ================
+# StringIndexer để mã hoá label rời rạc thành số nguyên; VectorIndexer sẽ đánh dấu categorical theo maxCategories
+stages_tree = []
+if cat_cols:
+    indexers_idx = [StringIndexer(inputCol=c, outputCol=f"{c}_idx", handleInvalid="keep") for c in cat_cols]
+    stages_tree += indexers_idx
+
+if imputer:
+    stages_tree.append(imputer)
+
+assembler_idx = VectorAssembler(
+    inputCols=([f"{c}_idx" for c in cat_cols] if cat_cols else []) + (imp_num_cols if imp_num_cols else []),
+    outputCol="features_idx",
+    handleInvalid="keep",
+)
+stages_tree.append(assembler_idx)
+
+vindexer = VectorIndexer(
+    inputCol="features_idx",
+    outputCol="features",
+    handleInvalid="keep",
+    maxCategories=32)
+stages_tree.append(vindexer)
+
+# RandomForest: cấu hình "nhẹ RAM"
+rf = RandomForestClassifier(
+    featuresCol="features", labelCol=LABEL_COL,
+    numTrees=100, maxDepth=8, maxBins=64,
+    featureSubsetStrategy="sqrt",
+    subsamplingRate=0.8,
+    minInstancesPerNode=5,
+    cacheNodeIds=False,
+    seed=1,
+)
+
+pipeline_rf = Pipeline(stages=stages_tree + [rf])
+
+# XGBoost Spark: dùng featurizer cây (không OHE)
+xgb = SparkXGBClassifier(
+    features_col="features",
+    label_col=LABEL_COL,
+    prediction_col="prediction",
+    probability_col="probability",
+
+    num_round=300,
+    max_depth=4,
+    eta=0.05,
+    subsample=0.9,
+    colsample_bytree=0.8,
+    
+    eval_metric="auc",
+    num_workers=2,
+    missing=0.0,
+    seed=1,
+)
+stages_tree_xgb = [s for s in stages_tree if not isinstance(s, VectorIndexer)]
+pipeline_xgb = Pipeline(stages=stages_tree_xgb + [xgb])
+
+# ============================== TRAIN/VALID SPLIT ============================
+print("\n>>> Splitting train/validation 80/20 ...")
+train_tr, train_val = train.randomSplit([0.8, 0.2], seed=1)
+
+evaluator = BinaryClassificationEvaluator(labelCol=LABEL_COL, rawPredictionCol="probability", metricName="areaUnderROC")
+
+models = {
+    "logistic": pipeline_logistic,
+    "random_forest": pipeline_rf,
+    "xgboost": pipeline_xgb,
 }
 
 results = {}
-pipelines = {}
+trained = {}
 
-
-# ============================ TRAIN 3 MODELS ============================
-for name, clf in models.items():
-    print(f"\n>>> Training model: {name}", flush=True)
-
-    pipe = Pipeline([
-        ("prep", preprocess),
-        ("clf", clf)
-    ])
-
-    pipe.fit(X_tr, y_tr)
-    y_pred = pipe.predict_proba(X_val)[:, 1]
-    auc = roc_auc_score(y_val, y_pred)
-
+# ============================== TRAIN LOOP ==================================
+for name, pipe in models.items():
+    print(f"\n>>> Training model: {name}")
+    model = pipe.fit(train_tr)
+    pred_val = model.transform(train_val)
+    auc = evaluator.evaluate(pred_val)
     results[name] = auc
-    pipelines[name] = pipe
+    trained[name] = model
+    print(f"AUC({name}) = {auc:.4f}")
 
-    print(f"AUC({name}) = {auc:.4f}", flush=True)
+    save_path = os.path.join(MODEL_DIR, f"{name}_spark_model")
+    model.write().overwrite().save(save_path)
+    print(f"Saved model → {save_path}")
 
-    joblib.dump(pipe, f"{model_dir}/{name}_model.pkl")
-    print(f"Saved model: {model_dir}/{name}_model.pkl", flush=True)
-
-
-# ============================ BEST MODEL ================================
 print("\n===== SUMMARY AUC =====")
 for k, v in results.items():
     print(f"{k}: {v:.4f}")
 
 best_name = max(results, key=results.get)
-best_pipe = pipelines[best_name]
+best_model = trained[best_name]
+print(f"\n>>> BEST MODEL = {best_name.upper()} (AUC={results[best_name]:.4f})")
 
-print(f"\n>>> BEST MODEL = {best_name.upper()} (AUC={results[best_name]:.4f})", flush=True)
+# ============================== SCORING FULL DATA ============================
+print("\n>>> Scoring full train & test with the BEST model ...")
+train_scored = best_model.transform(train).withColumn("pd_1", F.col("probability")[1]) \
+                   .select(ID_COL, LABEL_COL, "pd_1")
 
+test_scored  = best_model.transform(test).withColumn("pd_1", F.col("probability")[1]) \
+                   .select(ID_COL, "pd_1")
 
-# ============================ SCORING FULL DATASET ======================
-print("\n>>> Predicting full dataset...", flush=True)
-train_proba = best_pipe.predict_proba(X_train)[:, 1]
-test_proba  = best_pipe.predict_proba(X_test)[:, 1]
+# ============================== SAVE TO POSTGRES =============================
+print("\n>>> Writing scores to Postgres via JDBC ...")
+try:
+    train_scored.write.mode("overwrite").jdbc(JDBC_URL, "public.spark_train_scores", JDBC_PROPS)
+    test_scored.write.mode("overwrite").jdbc(JDBC_URL, "public.spark_test_scores", JDBC_PROPS)
+    print("✓ Wrote to Postgres tables: public.spark_train_scores / public.spark_test_scores")
+except Exception as e:
+    print("⚠ JDBC write failed. Make sure PostgreSQL JDBC driver jar is available at /opt/spark/jars/")
+    print("  Expected: postgresql-42.7.1.jar")
+    print("  Error:", str(e))
 
-train_out = pd.DataFrame({
-    id_col: train_id,
-    label_col: y.values,
-    "pd_1": train_proba
-})
-
-test_out = pd.DataFrame({
-    id_col: test_id,
-    "pd_1": test_proba
-})
-
-
-# ============================ SAVE POSTGRES =============================
-print("\n>>> Saving results to Postgres...", flush=True)
-
-sdf_train_out = spark.createDataFrame(train_out)
-sdf_test_out  = spark.createDataFrame(test_out)
-
-sdf_train_out.write.mode("overwrite").jdbc(
-    JDBC_URL, "public.sklearn_train_scores", JDBC_PROPS
-)
-
-sdf_test_out.write.mode("overwrite").jdbc(
-    JDBC_URL, "public.sklearn_test_scores", JDBC_PROPS
-)
-
-print("\n>>> TRAINING DONE!", flush=True)
+print("\n>>> DONE.")
 spark.stop()
