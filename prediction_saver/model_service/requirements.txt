@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pyspark
+joblib
+pandas
+requests
+redis
+pydantic
+kafka-python
