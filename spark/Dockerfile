@@ -15,6 +15,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel && \
       numpy==1.24.3 \
       pandas==1.5.3 \
       scipy==1.10.1 \
+      pyarrow==12.0.1 \
       scikit-learn==1.2.2
 
 RUN mkdir -p /opt/spark/jars && \

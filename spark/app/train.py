@@ -6,6 +6,8 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, NumericType, StringType
 
+from pyspark.ml.functions import vector_to_array
+
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import (
     StringIndexer,
@@ -228,7 +230,7 @@ pipeline_rf = Pipeline(stages=stages_tree + [rf])
 
 # XGBoost Spark: dùng featurizer cây (không OHE)
 xgb = SparkXGBClassifier(
-    features_col="features",
+    features_col="features_idx",
     label_col=LABEL_COL,
     prediction_col="prediction",
     probability_col="probability",
@@ -286,22 +288,36 @@ print(f"\n>>> BEST MODEL = {best_name.upper()} (AUC={results[best_name]:.4f})")
 
 # ============================== SCORING FULL DATA ============================
 print("\n>>> Scoring full train & test with the BEST model ...")
-train_scored = best_model.transform(train).withColumn("pd_1", F.col("probability")[1]) \
-                   .select(ID_COL, LABEL_COL, "pd_1")
+def add_pd1(df):
+    dtype = dict(df.dtypes).get("probability", "")
+    if dtype == "vector":
+        return df.withColumn("pd_1", vector_to_array(F.col("probability"))[1])
+    else:
+        # đã là scalar/double
+        return df.withColumn("pd_1", F.col("probability"))
 
-test_scored  = best_model.transform(test).withColumn("pd_1", F.col("probability")[1]) \
-                   .select(ID_COL, "pd_1")
-
-# ============================== SAVE TO POSTGRES =============================
+train_scored = add_pd1(best_model.transform(train)).select(ID_COL, LABEL_COL, "pd_1")
+test_scored  = add_pd1(best_model.transform(test)).select(ID_COL, "pd_1")
+best_model.transform(train).select("probability").printSchema()
+# ============================ SAVE TO POSTGRES =============================
 print("\n>>> Writing scores to Postgres via JDBC ...")
-try:
-    train_scored.write.mode("overwrite").jdbc(JDBC_URL, "public.spark_train_scores", JDBC_PROPS)
-    test_scored.write.mode("overwrite").jdbc(JDBC_URL, "public.spark_test_scores", JDBC_PROPS)
-    print("✓ Wrote to Postgres tables: public.spark_train_scores / public.spark_test_scores")
-except Exception as e:
-    print("⚠ JDBC write failed. Make sure PostgreSQL JDBC driver jar is available at /opt/spark/jars/")
-    print("  Expected: postgresql-42.7.1.jar")
-    print("  Error:", str(e))
+(train_scored.write
+ .format("jdbc")
+ .option("url", JDBC_URL)
+ .option("dbtable", "public.spark_train_scores")
+ .option("user", JDBC_PROPS["user"])
+ .option("password", JDBC_PROPS["password"])
+ .option("driver", JDBC_PROPS["driver"])
+ .mode("overwrite")
+ .save())
 
-print("\n>>> DONE.")
+(test_scored.write
+ .format("jdbc")
+ .option("url", JDBC_URL)
+ .option("dbtable", "public.spark_test_scores")
+ .option("user", JDBC_PROPS["user"])
+ .option("password", JDBC_PROPS["password"])
+ .option("driver", JDBC_PROPS["driver"])
+ .mode("overwrite")
+ .save())
 spark.stop()
