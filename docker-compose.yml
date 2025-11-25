@@ -45,6 +45,22 @@ services:
     networks:
       - bdnet
 
+  ingestion-api:
+    build:
+        context: ./ingestion
+        dockerfile: Dockerfile
+    container_name: ingestion_api
+    environment:
+        - KAFKA_BOOTSTRAP=kafka:9092
+        - KAFKA_TOPIC=credit_applications
+        - DEFAULT_FRAUD_RATE=0.002
+    depends_on:
+        - kafka
+    ports:
+        - "8000:8000"
+    networks:
+        - bdnet
+
   # HDFS
   namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
