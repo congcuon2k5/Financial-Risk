@@ -15,7 +15,8 @@ RUN python3 -m pip install --upgrade pip setuptools wheel && \
       pandas==1.5.3 \
       scipy==1.10.1 \
       pyarrow==12.0.1 \
-      scikit-learn==1.2.2
+      scikit-learn==1.2.2 \
+      happybase 
 
 RUN mkdir -p /opt/spark/jars && \
     curl -L -o /opt/spark/jars/xgboost4j_2.12-1.7.6.jar \

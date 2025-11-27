@@ -6,6 +6,7 @@ from pyspark.sql.types import (
 )
 from pyspark.ml.pipeline import PipelineModel
 from pyspark.ml.functions import vector_to_array
+import happybase
 import random
 
 # ==== CONFIG ====
@@ -30,6 +31,9 @@ MODEL_PATH = os.getenv(
 )
 
 ID_COL = "SK_ID_CURR"
+HBASE_HOST = os.getenv("HBASE_HOST", "hbase")
+HBASE_PORT = int(os.getenv("HBASE_PORT", "9090"))
+HBASE_TABLE = os.getenv("HBASE_TABLE", "realtime_scores")
 
 # ==== SPARK SESSION ====
 spark = (
@@ -349,6 +353,53 @@ q_kafka = (
     .trigger(processingTime=TRIGGER_INTERVAL)
     .start()
 )
+
+# ==== SINK 3: HBASE ====
+def write_to_hbase(df, epoch_id: int):
+    """
+    Ghi batch hiện tại vào HBase realtime_scores.
+    df: DataFrame gồm sk_id_curr, pd_1, ts.
+    """
+    if df.rdd.isEmpty():
+        return
+
+    def send_partition(rows):
+        # mở connection 1 lần cho mỗi partition
+        connection = happybase.Connection(host=HBASE_HOST, port=HBASE_PORT)
+        table = connection.table(HBASE_TABLE)
+        batch = table.batch()
+
+        for row in rows:
+            sk_id = str(row["sk_id_curr"])
+            pd_1 = float(row["pd_1"]) if row["pd_1"] is not None else 0.0
+            ts_val = row["ts"]
+            ts_str = ts_val.isoformat() if ts_val is not None else ""
+
+            batch.put(
+                sk_id.encode("utf-8"),
+                {
+                    b"score:pd_1": str(pd_1).encode("utf-8"),
+                    b"meta:ts": ts_str.encode("utf-8"),
+                },
+            )
+
+        batch.send()
+        connection.close()
+
+    # chọn đúng 3 cột cần thiết
+    df.select("sk_id_curr", "pd_1", "ts").foreachPartition(send_partition)
+    print(f"[stream] Batch {epoch_id} -> HBase rows={df.count()}")
+
+
+q_hbase = (
+    scored.writeStream
+    .outputMode("append")
+    .foreachBatch(write_to_hbase)
+    .option("checkpointLocation", f"{CHECKPOINT_DIR}/hbase")
+    .trigger(processingTime=TRIGGER_INTERVAL)
+    .start()
+)
+
 
 print("[stream] Streaming started, awaiting termination...")
 spark.streams.awaitAnyTermination()

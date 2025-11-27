@@ -161,6 +161,21 @@ services:
       - "8082:8080"
     networks:
       - bdnet
+  
+  hbase:
+    image: dajobe/hbase:latest
+    container_name: hbase
+    ports:
+      - "16010:16010"
+      - "9090:9090"
+    environment:
+      - HBASE_MANAGES_ZK=true
+    networks:
+      - bdnet
+    volumes:
+      - ./hbase_data:/opt/data
+
+
 networks:
   bdnet:
 

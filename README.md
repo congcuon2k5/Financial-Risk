@@ -71,14 +71,25 @@ B4: Kết quả này được Spark ghi vào PostgreSQL:
 ## Xây streaming_layer
 - docker exec -it kafka bash -lc \
   "kafka-topics --create --topic credit_scores --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 || true"
+- docker exec -it namenode bash(dành cho docker-compose up -d lần 2)
+- hdfs dfs -rm -r /checkpoints/credit_scoring_v3(dành cho docker-compose up -d lần 2)
 - docker exec -it spark-master bash 
 - ls /opt/spark/jars | grep kafka
   ls /opt/spark/jars | grep spark-sql-kafka
   ls /opt/spark/jars | grep token-provider
 - /opt/spark/bin/spark-submit \
-  --master spark://spark-master:7077 \
-  /opt/app/streaming_score.py
-- Mở cmd và chạy: Invoke-WebRequest `
+    --master spark://spark-master:7077 \
+    --conf spark.pyspark.python=python3 \
+    --conf spark.pyspark.driver.python=python3 \
+    --conf spark.executor.memory=3g \
+    --conf spark.driver.memory=3g \
+    --conf spark.executor.cores=1 \
+    --conf spark.task.cpus=1 \
+    --conf spark.sql.shuffle.partitions=6 \
+    --conf spark.driver.extraClassPath=/opt/spark/jars/* \
+    --conf spark.executor.extraClassPath=/opt/spark/jars/* \
+    /opt/app/streaming_score.py
+- Mở cmd trên máy tính và chạy: Invoke-WebRequest `
   -Uri "http://localhost:8000/api/loan-application?fraud_rate=0.01" `
   -Method Post `
   -ContentType "application/json" `
@@ -86,10 +97,10 @@ B4: Kết quả này được Spark ghi vào PostgreSQL:
 - Trình duyệt: vào http://localhost:8083
 
   Check: Topic credit_applications:
-  Bạn phải thấy message JSON vào đều đều (SK_ID_CURR, AMT_CREDIT, …).
+  Thấy message JSON vào (SK_ID_CURR, AMT_CREDIT, …).
 
 
   Topic credit_scores: Đây là output của Spark streaming,
   Message dạng JSON có SK_ID_CURR, pd_1, ts.
   
-  Nếu credit_applications có message mà credit_scores chưa có, đợi vài giây xem; nếu vẫn không có, khi đó mới soi tiếp log Spark.
+  Nếu credit_applications có message mà credit_scores chưa có, đợi vài giây xem
