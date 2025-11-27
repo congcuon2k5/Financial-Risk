@@ -127,8 +127,8 @@ services:
       spark://spark-master:7077
       --webui-port 8081
     environment:
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=4
+      - SPARK_WORKER_MEMORY=6G
     ports:
       - "8081:8081"
     depends_on:
@@ -161,9 +161,6 @@ services:
       - "8082:8080"
     networks:
       - bdnet
-      
-  # stream view
-
 networks:
   bdnet:
 

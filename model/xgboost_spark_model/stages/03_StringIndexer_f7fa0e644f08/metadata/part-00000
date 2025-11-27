@@ -1,0 +1,1 @@
+{"class":"org.apache.spark.ml.feature.StringIndexerModel","timestamp":1763294703413,"sparkVersion":"3.4.1","uid":"StringIndexer_f7fa0e644f08","paramMap":{"outputCol":"FLAG_OWN_REALTY_idx","handleInvalid":"keep","inputCol":"FLAG_OWN_REALTY"},"defaultParamMap":{"stringOrderType":"frequencyDesc","outputCol":"StringIndexer_f7fa0e644f08__output","handleInvalid":"error"}}
