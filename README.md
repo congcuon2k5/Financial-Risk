@@ -104,3 +104,38 @@ B4: Kết quả này được Spark ghi vào PostgreSQL:
   Message dạng JSON có SK_ID_CURR, pd_1, ts.
   
   Nếu credit_applications có message mà credit_scores chưa có, đợi vài giây xem
+
+
+  ## Hbase
+- docker exec -it hbase bash
+- hbase shell
+- create 'realtime_scores', 'score', 'meta'
+- docker exec -it spark-master bash -lc "
+  cd /opt/app && \
+  /opt/spark/bin/spark-submit \
+    --master spark://spark-master:7077 \
+    --conf spark.pyspark.python=python3 \
+    --conf spark.pyspark.driver.python=python3 \
+    --conf spark.executor.memory=3g \
+    --conf spark.driver.memory=3g \
+    --conf spark.executor.cores=1 \
+    --conf spark.task.cpus=1 \
+    --conf spark.sql.shuffle.partitions=6 \
+    --conf spark.driver.extraClassPath=/opt/spark/jars/* \
+    --conf spark.executor.extraClassPath=/opt/spark/jars/* \
+    /opt/app/streaming_score.py
+- Invoke-WebRequest `
+  -Uri "http://localhost:8000/api/loan-application?fraud_rate=0.01" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body "{}"
+- docker exec -it hbase bash
+  hbase shell
+  scan 'realtime_scores', {LIMIT => 5}
+
+# Spring-boot-api
+- docker compose build spring-boot-api
+- docker compose up -d spring-boot-api
+- docker ps  (thấy spring-boot-api Up, port 8085)
+- Mở http://localhost:8085/api/health -> {"status":"OK"}
+- http://localhost:8085/api/score/<SK_ID_CURR>

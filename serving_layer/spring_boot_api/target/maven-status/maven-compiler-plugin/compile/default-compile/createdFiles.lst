@@ -1,0 +1,5 @@
+com/creditscore/controller/ScoreController.class
+com/creditscore/model/ScoreResponse.class
+com/creditscore/service/ScoreService.class
+com/creditscore/StringBoostApplication.class
+com/creditscore/config/HBaseConfig.class

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tra cứu rủi ro tín dụng</title>
+  <!-- Bootstrap CDN cho nhanh gọn -->
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+  <style>
+    body {
+      background-color: #f5f5f7;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        sans-serif;
+    }
+    .page-wrapper {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card-main {
+      max-width: 640px;
+      width: 100%;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+      border: none;
+    }
+    .risk-badge {
+      font-size: 0.9rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    .pd-value {
+      font-size: 2.4rem;
+      font-weight: 700;
+    }
+    .json-block {
+      font-family: "JetBrains Mono", Menlo, Monaco, Consolas, "Liberation Mono",
+        "Courier New", monospace;
+      font-size: 0.8rem;
+      background-color: #111827;
+      color: #e5e7eb;
+      padding: 12px 16px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      max-height: 260px;
+      overflow: auto;
+    }
+  </style>
+</head>
+<body>
+<div class="page-wrapper">
+  <div class="card card-main">
+    <div class="card-body p-4 p-md-5">
+      <h3 class="mb-3 fw-semibold">Tra cứu rủi ro tín dụng</h3>
+      <p class="text-muted mb-4">
+        Nhập <span class="fw-semibold">customer_ID</span> để xem
+        xác suất vỡ nợ và mức độ rủi ro.
+      </p>
+
+      <!-- Form tra cứu -->
+      <form id="score-form" class="row gy-2 gx-2 align-items-end">
+        <div class="col-12 col-md-8">
+          <label for="skId" class="form-label mb-1">customer_ID</label>
+          <input
+            type="number"
+            class="form-control"
+            id="skId"
+            name="skId"
+            placeholder="VD: 517677"
+            required
+          />
+        </div>
+        <div class="col-12 col-md-4 d-grid">
+          <button type="submit" class="btn btn-primary mt-3 mt-md-0">
+            Tra cứu
+          </button>
+        </div>
+      </form>
+
+      <p class="text-muted small mt-2">
+        Ví dụ ID đã có dữ liệu: <span class="fw-semibold">517677, 300838, ...</span>
+      </p>
+
+      <!-- Kết quả -->
+      <hr class="my-4" />
+      <div id="result" class="mt-2"></div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const form = document.getElementById("score-form");
+  const resultDiv = document.getElementById("result");
+
+  function renderMessage(html) {
+    resultDiv.innerHTML = html;
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const skId = document.getElementById("skId").value.trim();
+    if (!skId) return;
+
+    renderMessage(
+      '<div class="text-muted small">Đang tra cứu, vui lòng đợi...</div>'
+    );
+
+    const t0 = performance.now();
+    try {
+      const resp = await fetch(`/api/score/${skId}`);
+      const t1 = performance.now();
+      const latencyMs = (t1 - t0).toFixed(0);
+
+      if (resp.status === 404) {
+        renderMessage(`
+          <div class="alert alert-warning" role="alert">
+            Chưa tìm thấy kết quả cho <b>${skId}</b>.<br/>
+            ID không tồn tại.
+            <div class="small text-muted mt-1">Latency: ${latencyMs} ms</div>
+          </div>
+        `);
+        return;
+      }
+
+      if (!resp.ok) {
+        renderMessage(`
+          <div class="alert alert-danger" role="alert">
+            Lỗi khi gọi API: HTTP ${resp.status}.
+          </div>
+        `);
+        return;
+      }
+
+      const data = await resp.json(); // { skIdCurr, pd1, ts }
+      const pd = Number(data.pd1 || 0);
+      const pdPercent = (pd * 100).toFixed(2);
+      const tsRaw = data.ts || "";
+      const tsFormatted = tsRaw ? new Date(tsRaw).toLocaleString("vi-VN") : "-";
+
+      let level = "Thấp";
+      let levelClass = "success";
+      let desc = "Rủi ro thấp, có thể chấp nhận.";
+
+      if (pd >= 0.7) {
+        level = "Cao";
+        levelClass = "danger";
+        desc = "Rủi ro cao – nên từ chối hoặc thẩm định rất kỹ.";
+      } else if (pd >= 0.5) {
+        level = "Trung bình";
+        levelClass = "warning";
+        desc = "Rủi ro trung bình – cần xem xét thêm thông tin.";
+      } else if (pd >= 0.3) {
+        level = "Thấp - Trung bình";
+        levelClass = "info";
+        desc = "Rủi ro tương đối thấp, vẫn nên kiểm tra thêm.";
+      }
+
+      const progress = Math.max(0, Math.min(100, pd * 100));
+
+      renderMessage(`
+        <div class="mb-3">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div>
+              <div class="text-muted small">Kết quả cho customer_ID</div>
+              <div class="fw-semibold">${data.skIdCurr}</div>
+            </div>
+            <span class="badge bg-${levelClass} risk-badge">
+              Rủi ro: ${level}
+            </span>
+          </div>
+
+          <div class="d-flex align-items-baseline gap-3 mb-2">
+            <div class="pd-value">${pdPercent}%</div>
+            <div class="text-muted small">
+              Xác suất vỡ nợ
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <div class="progress" style="height: 10px;">
+              <div class="progress-bar bg-${levelClass}" role="progressbar"
+                   style="width: ${progress}%;"
+                   aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">
+              </div>
+            </div>
+          </div>
+
+          <div class="small text-muted mb-2">
+            <b>Thời gian chấm điểm:</b> ${tsFormatted}
+            <span class="ms-3"><b>Latency:</b> ${latencyMs} ms</span>
+          </div>
+
+          <p class="mb-1">${desc}</p>
+        </div>
+
+        <details class="mt-3">
+          <summary class="small text-muted mb-2">Chi tiết JSON (debug)</summary>
+          <div class="json-block mt-2">${JSON.stringify(data, null, 2)}</div>
+        </details>
+      `);
+    } catch (err) {
+      console.error(err);
+      renderMessage(`
+        <div class="alert alert-danger" role="alert">
+          Không gọi được API Spring Boot. Vui lòng kiểm tra container <b>spring-boot-api</b>.
+        </div>
+      `);
+    }
+  });
+</script>
+</body>
+</html>
