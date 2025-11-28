@@ -139,3 +139,6 @@ B4: Kết quả này được Spark ghi vào PostgreSQL:
 - docker ps  (thấy spring-boot-api Up, port 8085)
 - Mở http://localhost:8085/api/health -> {"status":"OK"}
 - http://localhost:8085/api/score/<SK_ID_CURR>
+
+## User UI
+- localhost:8085

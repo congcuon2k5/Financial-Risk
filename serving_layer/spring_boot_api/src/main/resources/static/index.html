@@ -57,14 +57,13 @@
     <div class="card-body p-4 p-md-5">
       <h3 class="mb-3 fw-semibold">Tra cứu rủi ro tín dụng</h3>
       <p class="text-muted mb-4">
-        Nhập <span class="fw-semibold">customer_ID</span> để xem
-        xác suất vỡ nợ và mức độ rủi ro.
+        Nhập <span class="fw-semibold">mã khách hàng</span>
       </p>
 
       <!-- Form tra cứu -->
       <form id="score-form" class="row gy-2 gx-2 align-items-end">
         <div class="col-12 col-md-8">
-          <label for="skId" class="form-label mb-1">customer_ID</label>
+          <label for="skId" class="form-label mb-1">mã khách hàng</label>
           <input
             type="number"
             class="form-control"
@@ -80,10 +79,6 @@
           </button>
         </div>
       </form>
-
-      <p class="text-muted small mt-2">
-        Ví dụ ID đã có dữ liệu: <span class="fw-semibold">517677, 300838, ...</span>
-      </p>
 
       <!-- Kết quả -->
       <hr class="my-4" />
@@ -121,7 +116,6 @@
           <div class="alert alert-warning" role="alert">
             Chưa tìm thấy kết quả cho <b>${skId}</b>.<br/>
             ID không tồn tại.
-            <div class="small text-muted mt-1">Latency: ${latencyMs} ms</div>
           </div>
         `);
         return;
@@ -150,11 +144,11 @@
         level = "Cao";
         levelClass = "danger";
         desc = "Rủi ro cao – nên từ chối hoặc thẩm định rất kỹ.";
-      } else if (pd >= 0.5) {
+      } else if (pd >= 0.4) {
         level = "Trung bình";
         levelClass = "warning";
         desc = "Rủi ro trung bình – cần xem xét thêm thông tin.";
-      } else if (pd >= 0.3) {
+      } else if (pd >= 0.10) {
         level = "Thấp - Trung bình";
         levelClass = "info";
         desc = "Rủi ro tương đối thấp, vẫn nên kiểm tra thêm.";
@@ -192,16 +186,10 @@
 
           <div class="small text-muted mb-2">
             <b>Thời gian chấm điểm:</b> ${tsFormatted}
-            <span class="ms-3"><b>Latency:</b> ${latencyMs} ms</span>
           </div>
 
           <p class="mb-1">${desc}</p>
         </div>
-
-        <details class="mt-3">
-          <summary class="small text-muted mb-2">Chi tiết JSON (debug)</summary>
-          <div class="json-block mt-2">${JSON.stringify(data, null, 2)}</div>
-        </details>
       `);
     } catch (err) {
       console.error(err);
