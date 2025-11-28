@@ -45,6 +45,22 @@ services:
     networks:
       - bdnet
 
+  ingestion-api:
+    build:
+        context: ./ingestion
+        dockerfile: Dockerfile
+    container_name: ingestion_api
+    environment:
+        - KAFKA_BOOTSTRAP=kafka:9092
+        - KAFKA_TOPIC=credit_applications
+        - DEFAULT_FRAUD_RATE=0.002
+    depends_on:
+        - kafka
+    ports:
+        - "8000:8000"
+    networks:
+        - bdnet
+
   # HDFS
   namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
@@ -111,8 +127,8 @@ services:
       spark://spark-master:7077
       --webui-port 8081
     environment:
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=4
+      - SPARK_WORKER_MEMORY=6G
     ports:
       - "8081:8081"
     depends_on:
@@ -145,8 +161,36 @@ services:
       - "8082:8080"
     networks:
       - bdnet
-      
-  # stream view
+  
+  hbase:
+    image: dajobe/hbase:latest
+    container_name: hbase
+    ports:
+      - "16010:16010"
+      - "9090:9090"
+    environment:
+      - HBASE_MANAGES_ZK=true
+    networks:
+      - bdnet
+    volumes:
+      - ./hbase_data:/opt/data
+
+  spring-boot-api:
+    build:
+      context: ./serving_layer/spring_boot_api
+      dockerfile: Dockerfile
+    container_name: spring-boot-api
+    depends_on:
+      - hbase
+    environment:
+      - HBASE_ZOOKEEPER_QUORUM=hbase
+      - HBASE_ZOOKEEPER_PORT=2181
+    ports:
+      - "8085:8085"
+    networks:
+      - bdnet
+
+
 
 networks:
   bdnet:
